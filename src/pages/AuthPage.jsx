@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useSettings } from '../context/SettingsContext'
 
 export default function AuthPage() {
   const { signIn, signUp, resetPassword } = useAuth()
+  const { appName } = useSettings()
   const navigate = useNavigate()
   const [mode, setMode] = useState('login') // 'login' | 'signup' | 'reset'
   const [form, setForm] = useState({ name: '', email: '', password: '' })
@@ -50,7 +52,7 @@ export default function AuthPage() {
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
         <div className="text-center mb-8">
           <div className="text-4xl mb-2">💰</div>
-          <h1 className="text-2xl font-bold text-gray-800">OurBudget</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{appName}</h1>
           <p className="text-gray-500 text-sm mt-1">Finance, together</p>
         </div>
 

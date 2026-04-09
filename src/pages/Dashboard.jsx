@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
+import { useSettings } from '../context/SettingsContext'
 import { runRecurringPopulate } from '../hooks/useRecurring'
 import { toActual, fmt } from '../utils'
 import { PIE_COLOURS } from '../constants'
@@ -20,8 +21,31 @@ const ChartTooltip = ({ active, payload }) => {
   )
 }
 
+const prevMonthYM = () => {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().slice(0, 7)
+}
+
+const prevMonthName = () => {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth() - 1, 1).toLocaleString('default', { month: 'long' })
+}
+
+const DeltaBadge = ({ current, previous, label }) => {
+  if (previous === null || previous === undefined) return null
+  const delta = current - previous
+  const isUp = delta >= 0
+  return (
+    <p className="text-xs text-white/60 mt-0.5">
+      {isUp ? '↑' : '↓'} ${fmt(Math.abs(delta))} vs {label}
+    </p>
+  )
+}
+
 export default function Dashboard() {
   const { user, household, displayName } = useAuth()
+  const { savingsMode } = useSettings()
+
   const [myIncome, setMyIncome] = useState([])
   const [myExpenses, setMyExpenses] = useState([])
   const [sharedBills, setSharedBills] = useState([])
@@ -30,12 +54,17 @@ export default function Dashboard() {
   const [partner, setPartner] = useState(null)
   const [partnerIncome, setPartnerIncome] = useState([])
   const [partnerExpenses, setPartnerExpenses] = useState([])
+  // Previous month for MoM comparison
+  const [prevMyNet, setPrevMyNet] = useState(null)
+  const [prevHouseholdNet, setPrevHouseholdNet] = useState(null)
   const [loading, setLoading] = useState(true)
   const [recurringNotice, setRecurringNotice] = useState(null)
   const [chartView, setChartView] = useState('donut')
 
   const currentMonth = new Date().toISOString().slice(0, 7)
   const monthName = new Date().toLocaleString('default', { month: 'long', year: 'numeric' })
+  const lastMonth = prevMonthYM()
+  const lastMonthName = prevMonthName()
 
   useEffect(() => {
     if (!user) return
@@ -45,7 +74,8 @@ export default function Dashboard() {
       if (newCount > 0) setRecurringNotice(newCount)
       if (newCount === -1) setRecurringNotice(-1)
 
-      const [incRes, expRes, sharedRes, savRes, limRes] = await Promise.all([
+      const [incRes, expRes, sharedRes, savRes, limRes,
+             prevIncRes, prevExpRes, prevSharedRes] = await Promise.all([
         supabase.from('income').select('*').eq('user_id', user.id).eq('month', currentMonth),
         supabase.from('expenses').select('*').eq('user_id', user.id).eq('is_shared', false).eq('month', currentMonth),
         household?.id
@@ -55,35 +85,64 @@ export default function Dashboard() {
           ? supabase.from('savings_goals').select('*').eq('household_id', household.id)
           : Promise.resolve({ data: [] }),
         supabase.from('budget_limits').select('*').eq('user_id', user.id),
+        // Previous month for MoM
+        supabase.from('income').select('*').eq('user_id', user.id).eq('month', lastMonth),
+        supabase.from('expenses').select('*').eq('user_id', user.id).eq('is_shared', false).eq('month', lastMonth),
+        household?.id
+          ? supabase.from('expenses').select('*').eq('household_id', household.id).eq('is_shared', true).eq('month', lastMonth)
+          : Promise.resolve({ data: [] }),
       ])
 
-      setMyIncome(incRes.data || [])
-      setMyExpenses(expRes.data || [])
-      setSharedBills(sharedRes.data || [])
+      const incData = incRes.data || []
+      const expData = expRes.data || []
+      const sharedData = sharedRes.data || []
+
+      setMyIncome(incData)
+      setMyExpenses(expData)
+      setSharedBills(sharedData)
       setSavingsGoals(savRes.data || [])
       setBudgetLimits(limRes.data || [])
+
+      // Calculate previous month net for MoM
+      const prevInc = (prevIncRes.data || []).reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
+      const prevExp = (prevExpRes.data || []).reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
+      const prevShared = (prevSharedRes.data || []).reduce((s, b) => s + toActual(b.amount, b.frequency), 0)
+      const prevSharedHalf = prevShared / 2
+      const prevNet = prevInc - prevExp - prevSharedHalf
+      // Only show MoM if there was actual data last month
+      if (prevInc > 0 || prevExp > 0) setPrevMyNet(prevNet)
 
       if (household?.id) {
         const { data: members } = await supabase
           .from('household_members').select('user_id, display_name')
           .eq('household_id', household.id).neq('user_id', user.id)
+
         if (members?.length > 0) {
           const pm = members[0]
           setPartner(pm)
-          const [pIncRes, pExpRes] = await Promise.all([
+          const [pIncRes, pExpRes, prevPIncRes, prevPExpRes] = await Promise.all([
             supabase.from('income').select('*').eq('user_id', pm.user_id).eq('month', currentMonth),
             supabase.from('expenses').select('*').eq('user_id', pm.user_id).eq('is_shared', false).eq('month', currentMonth),
+            supabase.from('income').select('*').eq('user_id', pm.user_id).eq('month', lastMonth),
+            supabase.from('expenses').select('*').eq('user_id', pm.user_id).eq('is_shared', false).eq('month', lastMonth),
           ])
           setPartnerIncome(pIncRes.data || [])
           setPartnerExpenses(pExpRes.data || [])
+
+          // Previous month household net
+          const prevPInc = (prevPIncRes.data || []).reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
+          const prevPExp = (prevPExpRes.data || []).reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
+          const prevHHNet = (prevInc + prevPInc) - (prevExp + prevPExp + prevShared)
+          if (prevInc > 0 || prevPInc > 0) setPrevHouseholdNet(prevHHNet)
         }
       }
+
       setLoading(false)
     }
     init()
   }, [user, household])
 
-  // Use toActual so one-off items are included at face value in this month's real totals
+  // Current month calculations
   const myTotalIncome = myIncome.reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
   const myTotalExp = myExpenses.reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
   const totalShared = sharedBills.reduce((s, b) => s + toActual(b.amount, b.frequency), 0)
@@ -93,24 +152,29 @@ export default function Dashboard() {
   const partnerTotalIncome = partnerIncome.reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
   const partnerTotalExp = partnerExpenses.reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
   const partnerNet = partnerTotalIncome - partnerTotalExp - myShareOfBills
+  const householdNet = (myTotalIncome + partnerTotalIncome) - (myTotalExp + partnerTotalExp + totalShared)
 
-  const householdIncome = myTotalIncome + partnerTotalIncome
-  const householdExpenses = myTotalExp + partnerTotalExp + totalShared
-  const householdNet = householdIncome - householdExpenses
+  // Savings commitments for savings mode display
+  const totalSavingsCommitment = savingsGoals.reduce((s, g) => s + parseFloat(g.monthly_contribution || 0), 0)
+  const myEffectiveSurplus = myNet - totalSavingsCommitment
 
-  // Budget warnings using toActual
+  // BUG FIX: Budget warnings include shared bills in category spend (mirrors BudgetLimitsPage fix)
   const spendByCategory = myExpenses.reduce((acc, e) => {
     const cat = e.category || 'Other'
     acc[cat] = (acc[cat] || 0) + toActual(e.amount, e.frequency)
     return acc
   }, {})
+  sharedBills.forEach(b => {
+    const mappedCat = b.category === 'Groceries' ? 'Food' : b.category || 'Other'
+    spendByCategory[mappedCat] = (spendByCategory[mappedCat] || 0) + (toActual(b.amount, b.frequency) / 2)
+  })
   const budgetWarnings = budgetLimits
     .map(l => ({ ...l, pct: ((spendByCategory[l.category] || 0) / l.monthly_limit) * 100 }))
     .filter(l => l.pct >= 80).sort((a, b) => b.pct - a.pct)
 
-  // Chart data — personal categories + share of shared bills
+  // Chart data
   const categoryTotals = { ...spendByCategory }
-  if (myShareOfBills > 0) categoryTotals['Shared Bills'] = myShareOfBills
+  // Don't double-count shared bills (already added to personal categories above)
   const totalSpend = Object.values(categoryTotals).reduce((s, v) => s + v, 0)
   const chartData = Object.entries(categoryTotals)
     .sort((a, b) => b[1] - a[1])
@@ -187,26 +251,53 @@ export default function Dashboard() {
               </div>
             ) : (
               <>
+                {/* Household hero */}
                 {partner && (
                   <div className={`rounded-2xl p-6 ${isPos(householdNet) ? 'bg-gradient-to-r from-violet-500 to-indigo-500' : 'bg-gradient-to-r from-red-500 to-rose-500'} text-white`}>
                     <p className="text-white/70 text-xs font-medium uppercase tracking-wider mb-1">🏡 Household — {monthName}</p>
                     <p className="text-white/80 text-sm">Combined monthly surplus / deficit</p>
                     <p className="text-4xl font-bold mt-1">{isPos(householdNet) ? '+' : '-'}${fmt(Math.abs(householdNet))}</p>
-                    <p className="text-white/60 text-xs mt-2">Income ${fmt(householdIncome)} − Expenses ${fmt(householdExpenses)}</p>
+                    <DeltaBadge current={householdNet} previous={prevHouseholdNet} label={lastMonthName} />
+                    <p className="text-white/50 text-xs mt-2">
+                      Income ${fmt(myTotalIncome + partnerTotalIncome)} − Expenses ${fmt(myTotalExp + partnerTotalExp + totalShared)}
+                    </p>
                   </div>
                 )}
 
+                {/* Individual cards */}
                 <div className={`grid gap-4 ${partner ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
+                  {/* My card */}
                   <div className={`rounded-2xl p-5 ${isPos(myNet) ? 'bg-gradient-to-br from-emerald-500 to-teal-500' : 'bg-gradient-to-br from-red-500 to-rose-500'} text-white`}>
                     <p className="text-white/70 text-xs font-medium uppercase tracking-wider mb-1">👤 {displayName || 'Me'}</p>
                     <p className="text-white/80 text-sm">Monthly surplus / deficit</p>
-                    <p className="text-3xl font-bold mt-1">{isPos(myNet) ? '+' : '-'}${fmt(Math.abs(myNet))}</p>
+
+                    {/* Savings mode: On — show effective surplus as primary */}
+                    {savingsMode === 'on' && totalSavingsCommitment > 0 ? (
+                      <>
+                        <p className="text-3xl font-bold mt-1">{isPos(myEffectiveSurplus) ? '+' : '-'}${fmt(Math.abs(myEffectiveSurplus))}</p>
+                        <p className="text-white/60 text-xs mt-0.5">Before savings: {isPos(myNet) ? '+' : '-'}${fmt(Math.abs(myNet))} | Commitments: -${fmt(totalSavingsCommitment)}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-3xl font-bold mt-1">{isPos(myNet) ? '+' : '-'}${fmt(Math.abs(myNet))}</p>
+                        {/* Savings mode: Partial — show addendum */}
+                        {savingsMode === 'partial' && totalSavingsCommitment > 0 && (
+                          <p className="text-white/65 text-xs mt-0.5">
+                            After ${fmt(totalSavingsCommitment)}/mo savings → {isPos(myEffectiveSurplus) ? '+' : '-'}${fmt(Math.abs(myEffectiveSurplus))} available
+                          </p>
+                        )}
+                      </>
+                    )}
+
+                    <DeltaBadge current={myNet} previous={prevMyNet} label={lastMonthName} />
                     <div className="mt-3 space-y-1 text-xs text-white/70">
                       <p>Income: ${fmt(myTotalIncome)}</p>
                       <p>Personal exp: ${fmt(myTotalExp)}</p>
                       <p>Share of bills: ${fmt(myShareOfBills)}</p>
                     </div>
                   </div>
+
+                  {/* Partner card */}
                   {partner && (
                     <div className={`rounded-2xl p-5 ${isPos(partnerNet) ? 'bg-gradient-to-br from-sky-500 to-blue-500' : 'bg-gradient-to-br from-orange-500 to-red-500'} text-white`}>
                       <p className="text-white/70 text-xs font-medium uppercase tracking-wider mb-1">👤 {partner.display_name}</p>
@@ -287,6 +378,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* Shared bills */}
                 {totalShared > 0 && (
                   <div className="bg-white rounded-2xl border border-gray-100 p-5">
                     <p className="text-sm font-semibold text-gray-700 mb-1">🏠 Shared Bills — {monthName}</p>
@@ -295,6 +387,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* Savings goals */}
                 {savingsGoals.length > 0 && (
                   <div className="bg-white rounded-2xl border border-gray-100 p-5">
                     <div className="flex items-center justify-between mb-4">
@@ -314,7 +407,7 @@ export default function Dashboard() {
                               <div className={`h-2 rounded-full ${pct >= 100 ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width: `${pct}%` }} />
                             </div>
                             {parseFloat(goal.monthly_contribution) > 0 && (
-                              <p className="text-xs text-gray-400 mt-1">Contributing ${fmt(goal.monthly_contribution)}/mo</p>
+                              <p className="text-xs text-gray-400 mt-1">${fmt(goal.monthly_contribution)}/mo commitment</p>
                             )}
                           </div>
                         )
@@ -323,6 +416,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* Quick links */}
                 <div className="grid grid-cols-2 gap-3">
                   {[
                     { to: '/income', label: 'Income', icon: '💵', desc: `${myIncome.length} source${myIncome.length !== 1 ? 's' : ''} this month` },

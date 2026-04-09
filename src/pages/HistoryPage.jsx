@@ -63,7 +63,7 @@ const exportCSV = (transactions, month) => {
     t.created_at ? t.created_at.slice(0, 10) : month,
     `"${t.name}"`,
     t._type === 'income' ? 'Income' : t._type === 'shared' ? 'Shared Bill (your half)' : 'Expense',
-    t.category || t.frequency || '',
+    t._type === 'income' ? t.frequency : (t.category || 'Other'),
     t.frequency || '',
     t._type === 'income' ? t._monthly.toFixed(2) : `-${t._monthly.toFixed(2)}`,
   ])

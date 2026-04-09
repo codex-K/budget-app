@@ -25,17 +25,18 @@ export async function runRecurringPopulate(user, household) {
 
     const [{ data: existingIncome }, { data: existingExpenses }] = await Promise.all([
       supabase.from('income').select('name').eq('user_id', user.id).eq('month', currentMonth),
-      supabase.from('expenses').select('name').eq('user_id', user.id).eq('is_shared', false).eq('month', currentMonth),
+      supabase.from('expenses').select('name, category').eq('user_id', user.id).eq('is_shared', false).eq('month', currentMonth),
     ])
 
     const existingIncomeNames = new Set((existingIncome || []).map(i => i.name))
-    const existingExpenseNames = new Set((existingExpenses || []).map(e => e.name))
+    // Use name+category composite key to avoid false deduplication matches
+    const existingExpenseKeys = new Set((existingExpenses || []).map(e => `${e.name}|${e.category || ''}`))
 
-    let existingSharedNames = new Set()
+    let existingSharedKeys = new Set()
     if (household?.id) {
-      const { data } = await supabase.from('expenses').select('name')
+      const { data } = await supabase.from('expenses').select('name, category')
         .eq('household_id', household.id).eq('is_shared', true).eq('month', currentMonth)
-      existingSharedNames = new Set((data || []).map(b => b.name))
+      existingSharedKeys = new Set((data || []).map(b => `${b.name}|${b.category || ''}`))
     }
 
     const newIncome = (recurringIncome || [])
@@ -43,11 +44,11 @@ export async function runRecurringPopulate(user, household) {
       .map(({ id, created_at, ...rest }) => ({ ...rest, month: currentMonth }))
 
     const newExpenses = (recurringExpenses || [])
-      .filter(e => !existingExpenseNames.has(e.name))
+      .filter(e => !existingExpenseKeys.has(`${e.name}|${e.category || ''}`))
       .map(({ id, created_at, ...rest }) => ({ ...rest, month: currentMonth }))
 
     const newShared = recurringShared
-      .filter(b => !existingSharedNames.has(b.name))
+      .filter(b => !existingSharedKeys.has(`${b.name}|${b.category || ''}`))
       .map(({ id, created_at, ...rest }) => ({ ...rest, month: currentMonth }))
 
     const inserts = []

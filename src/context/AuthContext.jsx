@@ -34,6 +34,7 @@ export const AuthProvider = ({ children }) => {
   const [household, setHousehold] = useState(null)
   const [displayName, setDisplayName] = useState('')
   const [loading, setLoading] = useState(true)
+  const [householdError, setHouseholdError] = useState(null)
   const [pendingName, setPendingName] = useState('')
 
   useEffect(() => {
@@ -46,48 +47,52 @@ export const AuthProvider = ({ children }) => {
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setUser(session?.user ?? null)
       if (session?.user) fetchHousehold(session.user.id)
-      else { setHousehold(null); setDisplayName(''); setLoading(false) }
+      else { setHousehold(null); setDisplayName(''); setHouseholdError(null); setLoading(false) }
     })
 
     return () => listener.subscription.unsubscribe()
   }, [])
 
   const fetchHousehold = async (userId) => {
-    const { data } = await supabase
-      .from('household_members')
-      .select('household_id, display_name, households(*)')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    setHouseholdError(null)
+    try {
+      const { data } = await supabase
+        .from('household_members')
+        .select('household_id, display_name, households(*)')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
 
-    if (data) {
-      setHousehold(data.households)
-      setDisplayName(data.display_name)
-    } else {
-      // No household found — create one automatically.
-      // This handles cases where email confirmation delayed household creation.
-      const storedName = pendingName || localStorage.getItem('pending_display_name') || 'User'
-      const hh = await createHouseholdForUser(userId, storedName)
-      if (hh) {
-        setHousehold(hh)
-        setDisplayName(storedName)
-        localStorage.removeItem('pending_display_name')
+      if (data) {
+        setHousehold(data.households)
+        setDisplayName(data.display_name)
+      } else {
+        // No household found — create one automatically
+        const storedName = pendingName || localStorage.getItem('pending_display_name') || 'User'
+        const hh = await createHouseholdForUser(userId, storedName)
+        if (hh) {
+          setHousehold(hh)
+          setDisplayName(storedName)
+          localStorage.removeItem('pending_display_name')
+        } else {
+          setHouseholdError('Could not set up your account. Please refresh the page.')
+        }
       }
+    } catch (err) {
+      console.error('fetchHousehold failed:', err)
+      setHouseholdError('Failed to load your account. Please refresh the page.')
     }
     setLoading(false)
   }
 
   const signUp = async (email, password, name) => {
-    // Store name so fetchHousehold can use it after email confirmation if needed
     localStorage.setItem('pending_display_name', name)
     setPendingName(name)
 
     const { data, error } = await supabase.auth.signUp({ email, password })
     if (error) return { error }
 
-    // If we have an active session immediately (email confirmation disabled),
-    // create the household now. Otherwise fetchHousehold will handle it on first login.
     if (data.session) {
       await createHouseholdForUser(data.user.id, name)
     }
@@ -120,7 +125,6 @@ export const AuthProvider = ({ children }) => {
       return { error: { message: "You're already in this household!" } }
     }
 
-    // Remove from all existing households first (prevents double-household bug)
     await supabase.from('household_members').delete().eq('user_id', user.id)
 
     const { error } = await supabase.from('household_members').insert({
@@ -135,7 +139,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={{
-      user, household, displayName, loading,
+      user, household, displayName, loading, householdError,
       signUp, signIn, signOut, resetPassword, joinHousehold, fetchHousehold,
     }}>
       {children}
