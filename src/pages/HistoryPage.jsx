@@ -1,23 +1,13 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
+import { toActual, fmt } from '../utils'
+import { PIE_COLOURS } from '../constants'
 import Layout from '../components/Layout'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line,
 } from 'recharts'
-
-const toMonthly = (amount, frequency) => {
-  const n = parseFloat(amount) || 0
-  if (frequency === 'weekly') return n * 52 / 12
-  if (frequency === 'fortnightly') return n * 26 / 12
-  if (frequency === 'yearly') return n / 12
-  return n
-}
-
-const fmt = (n) => parseFloat(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-const PIE_COLOURS = ['#6366f1','#f59e0b','#10b981','#f43f5e','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#64748b']
 
 const getMonths = (n) => {
   const months = []
@@ -66,6 +56,27 @@ const RANGE_OPTIONS = [
   { label: '24 months', value: 24 },
 ]
 
+// CSV export helper
+const exportCSV = (transactions, month) => {
+  const headers = ['Date', 'Name', 'Type', 'Category', 'Frequency', 'Amount']
+  const rows = transactions.map(t => [
+    t.created_at ? t.created_at.slice(0, 10) : month,
+    `"${t.name}"`,
+    t._type === 'income' ? 'Income' : t._type === 'shared' ? 'Shared Bill (your half)' : 'Expense',
+    t.category || t.frequency || '',
+    t.frequency || '',
+    t._type === 'income' ? t._monthly.toFixed(2) : `-${t._monthly.toFixed(2)}`,
+  ])
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `ourbudget-${month}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function HistoryPage() {
   const { user, household } = useAuth()
   const [allExpenses, setAllExpenses] = useState([])
@@ -97,17 +108,15 @@ export default function HistoryPage() {
     fetchAll()
   }, [user, household, monthRange])
 
-  // Ensure selected month is within range
   useEffect(() => {
-    if (!months.includes(selectedMonth)) {
-      setSelectedMonth(months[months.length - 1])
-    }
+    if (!months.includes(selectedMonth)) setSelectedMonth(months[months.length - 1])
   }, [monthRange])
 
+  // Use toActual throughout history — we're reporting real spending per month
   const trendData = months.map((m) => {
-    const monthIncome = allIncome.filter(i => i.month === m).reduce((s, i) => s + toMonthly(i.amount, i.frequency), 0)
-    const monthPersonal = allExpenses.filter(e => e.month === m).reduce((s, e) => s + toMonthly(e.amount, e.frequency), 0)
-    const monthShared = allShared.filter(b => b.month === m).reduce((s, b) => s + toMonthly(b.amount, b.frequency), 0) / 2
+    const monthIncome = allIncome.filter(i => i.month === m).reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
+    const monthPersonal = allExpenses.filter(e => e.month === m).reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
+    const monthShared = allShared.filter(b => b.month === m).reduce((s, b) => s + toActual(b.amount, b.frequency), 0) / 2
     const total = monthPersonal + monthShared
     return {
       month: monthLabel(m),
@@ -123,10 +132,10 @@ export default function HistoryPage() {
 
   const categoryTotals = selectedExpenses.reduce((acc, e) => {
     const cat = e.category || 'Other'
-    acc[cat] = (acc[cat] || 0) + toMonthly(e.amount, e.frequency)
+    acc[cat] = (acc[cat] || 0) + toActual(e.amount, e.frequency)
     return acc
   }, {})
-  const sharedTotal = selectedShared.reduce((s, b) => s + toMonthly(b.amount, b.frequency), 0) / 2
+  const sharedTotal = selectedShared.reduce((s, b) => s + toActual(b.amount, b.frequency), 0) / 2
   if (sharedTotal > 0) categoryTotals['Shared Bills'] = sharedTotal
 
   const totalSpend = Object.values(categoryTotals).reduce((s, v) => s + v, 0)
@@ -138,13 +147,13 @@ export default function HistoryPage() {
       pct: totalSpend > 0 ? ((value / totalSpend) * 100).toFixed(1) : '0',
     }))
 
-  const totalMonthIncome = selectedIncome.reduce((s, i) => s + toMonthly(i.amount, i.frequency), 0)
+  const totalMonthIncome = selectedIncome.reduce((s, i) => s + toActual(i.amount, i.frequency), 0)
   const selectedNet = totalMonthIncome - totalSpend
 
   const transactions = [
-    ...selectedIncome.map(i => ({ ...i, _type: 'income', _monthly: toMonthly(i.amount, i.frequency) })),
-    ...selectedExpenses.map(e => ({ ...e, _type: 'expense', _monthly: toMonthly(e.amount, e.frequency) })),
-    ...selectedShared.map(b => ({ ...b, _type: 'shared', _monthly: toMonthly(b.amount, b.frequency) / 2 })),
+    ...selectedIncome.map(i => ({ ...i, _type: 'income', _monthly: toActual(i.amount, i.frequency) })),
+    ...selectedExpenses.map(e => ({ ...e, _type: 'expense', _monthly: toActual(e.amount, e.frequency) })),
+    ...selectedShared.map(b => ({ ...b, _type: 'shared', _monthly: toActual(b.amount, b.frequency) / 2 })),
   ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
   return (
@@ -155,7 +164,6 @@ export default function HistoryPage() {
             <h1 className="text-2xl font-bold text-gray-800">History</h1>
             <p className="text-gray-400 text-sm mt-1">Your financial trends over time</p>
           </div>
-          {/* Month range selector */}
           <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
             {RANGE_OPTIONS.map(o => (
               <button key={o.value} onClick={() => setMonthRange(o.value)}
@@ -189,7 +197,8 @@ export default function HistoryPage() {
                   <BarChart data={trendData} barGap={4}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                     <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} tickFormatter={v => `$${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}`} />
+                    <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false}
+                      tickFormatter={v => `$${v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v}`} />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '12px' }} />
                     <Bar dataKey="Income" fill="#6366f1" radius={[4, 4, 0, 0]} />
@@ -199,7 +208,8 @@ export default function HistoryPage() {
                   <LineChart data={trendData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                     <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} tickFormatter={v => `$${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}`} />
+                    <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false}
+                      tickFormatter={v => `$${v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v}`} />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '12px' }} />
                     <Line type="monotone" dataKey="Income" stroke="#6366f1" strokeWidth={2.5} dot={{ r: 4, fill: '#6366f1' }} />
@@ -275,10 +285,17 @@ export default function HistoryPage() {
               </div>
             )}
 
-            {/* Transaction list */}
+            {/* Transaction list with CSV export */}
             {transactions.length > 0 && (
               <div className="bg-white rounded-2xl border border-gray-100 p-6">
-                <p className="font-semibold text-gray-800 mb-4">All Transactions — {monthLabelLong(selectedMonth)}</p>
+                <div className="flex items-center justify-between mb-4">
+                  <p className="font-semibold text-gray-800">All Transactions — {monthLabelLong(selectedMonth)}</p>
+                  <button
+                    onClick={() => exportCSV(transactions, selectedMonth)}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+                    ↓ Export CSV
+                  </button>
+                </div>
                 <div className="space-y-1">
                   {transactions.map((t) => {
                     const isIncome = t._type === 'income'
@@ -293,7 +310,8 @@ export default function HistoryPage() {
                             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                               <span className="text-xs text-gray-400 capitalize">{isIncome ? t.frequency : (t.category || 'Shared')}</span>
                               {t._type === 'shared' && <span className="text-xs bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-full">shared (your half)</span>}
-                              {t.is_recurring && <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">recurring</span>}
+                              {t.frequency === 'one-off' && <span className="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded-full">one-off</span>}
+                              {t.is_recurring && t.frequency !== 'one-off' && <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">recurring</span>}
                             </div>
                           </div>
                         </div>

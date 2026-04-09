@@ -2,32 +2,15 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { toMonthly, toActual, fmt } from '../utils'
+import { CATEGORIES, FREQUENCIES, CATEGORY_COLOURS } from '../constants'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 
-const CATEGORIES = ['Housing', 'Transport', 'Food', 'Health', 'Entertainment', 'Clothing', 'Subscriptions', 'Education', 'Personal Care', 'Other']
-const FREQUENCIES = ['weekly', 'fortnightly', 'monthly', 'yearly', 'one-off']
-
-const toMonthly = (amount, frequency) => {
-  const n = parseFloat(amount) || 0
-  if (frequency === 'weekly') return n * 52 / 12
-  if (frequency === 'fortnightly') return n * 26 / 12
-  if (frequency === 'yearly') return n / 12
-  return n
-}
-
-const CATEGORY_COLOURS = {
-  Housing: 'bg-blue-50 text-blue-600', Transport: 'bg-yellow-50 text-yellow-600',
-  Food: 'bg-green-50 text-green-600', Health: 'bg-red-50 text-red-600',
-  Entertainment: 'bg-purple-50 text-purple-600', Clothing: 'bg-pink-50 text-pink-600',
-  Subscriptions: 'bg-indigo-50 text-indigo-600', Education: 'bg-cyan-50 text-cyan-600',
-  'Personal Care': 'bg-orange-50 text-orange-600', Other: 'bg-gray-50 text-gray-600',
-}
-
 const emptyForm = () => ({
   name: '', amount: '', category: 'Other', frequency: 'monthly',
-  is_recurring: false, month: new Date().toISOString().slice(0, 7)
+  is_recurring: false, month: new Date().toISOString().slice(0, 7),
 })
 
 const monthLabel = (ym) => {
@@ -52,8 +35,7 @@ export default function ExpensesPage() {
   const fetchExpenses = async () => {
     setLoading(true)
     const { data } = await supabase.from('expenses').select('*')
-      .eq('user_id', user.id).eq('is_shared', false)
-      .order('month', { ascending: false })
+      .eq('user_id', user.id).eq('is_shared', false).order('month', { ascending: false })
     setExpenses(data || [])
     setLoading(false)
   }
@@ -85,14 +67,20 @@ export default function ExpensesPage() {
 
   const confirmAndDelete = async () => {
     await supabase.from('expenses').delete().eq('id', confirmDelete.id)
-    setConfirmDelete(null)
-    showToast('Expense deleted', 'error')
-    fetchExpenses()
+    setConfirmDelete(null); showToast('Expense deleted', 'error'); fetchExpenses()
   }
 
   const filtered = filterCat === 'All' ? expenses : expenses.filter(e => e.category === filterCat)
-  const totalMonthly = expenses.reduce((s, e) => s + toMonthly(e.amount, e.frequency), 0)
-  const grouped = filtered.reduce((acc, e) => { const m = e.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(e); return acc }, {})
+  const grouped = filtered.reduce((acc, e) => {
+    const m = e.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(e); return acc
+  }, {})
+
+  // Current month recurring total for the header (excludes one-offs)
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const currentMonthExp = expenses.filter(e => e.month === currentMonth)
+  const totalMonthly = currentMonthExp.reduce((s, e) => s + toMonthly(e.amount, e.frequency), 0)
+  const totalActual = currentMonthExp.reduce((s, e) => s + toActual(e.amount, e.frequency), 0)
+  const hasOneOffs = totalActual > totalMonthly
 
   return (
     <Layout>
@@ -108,8 +96,11 @@ export default function ExpensesPage() {
         </div>
 
         <div className="bg-gradient-to-r from-rose-500 to-pink-500 rounded-2xl p-5 text-white mb-6">
-          <p className="text-rose-100 text-sm">Total Monthly Expenses (all time)</p>
-          <p className="text-3xl font-bold mt-1">${totalMonthly.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <p className="text-rose-100 text-sm">This Month's Spending</p>
+          <p className="text-3xl font-bold mt-1">${fmt(totalActual)}</p>
+          {hasOneOffs && (
+            <p className="text-rose-200 text-xs mt-1">Recurring: ${fmt(totalMonthly)} + one-offs: ${fmt(totalActual - totalMonthly)}</p>
+          )}
         </div>
 
         <div className="flex gap-2 flex-wrap mb-4">
@@ -142,12 +133,16 @@ export default function ExpensesPage() {
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CATEGORY_COLOURS[exp.category] || 'bg-gray-50 text-gray-600'}`}>{exp.category}</span>
                           </div>
                           <p className="text-sm text-gray-400 mt-0.5 capitalize">
-                            ${parseFloat(exp.amount).toLocaleString('en-AU', { minimumFractionDigits: 2 })} · {exp.frequency}
+                            ${fmt(exp.amount)} · {exp.frequency}
                             {exp.is_recurring && <span className="ml-2 text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">recurring</span>}
                           </p>
                         </div>
                         <div className="flex items-center gap-3">
-                          <p className="text-sm font-semibold text-rose-500">${toMonthly(exp.amount, exp.frequency).toLocaleString('en-AU', { minimumFractionDigits: 2 })}/mo</p>
+                          <p className="text-sm font-semibold text-rose-500">
+                            {exp.frequency === 'one-off'
+                              ? <span className="text-amber-600">${fmt(exp.amount)} one-off</span>
+                              : `$${fmt(toMonthly(exp.amount, exp.frequency))}/mo`}
+                          </p>
                           <button onClick={() => openEdit(exp)} className="text-xs text-gray-400 hover:text-indigo-500 font-medium transition px-2 py-1 rounded-lg hover:bg-indigo-50">Edit</button>
                           <button onClick={() => setConfirmDelete(exp)} className="text-gray-300 hover:text-red-400 transition text-lg leading-none">✕</button>
                         </div>
@@ -208,7 +203,7 @@ export default function ExpensesPage() {
       )}
 
       {confirmDelete && (
-        <ConfirmModal title="Delete Expense?" message={`Are you sure you want to delete "${confirmDelete.name}"? This can't be undone.`}
+        <ConfirmModal title="Delete Expense?" message={`Delete "${confirmDelete.name}"? This can't be undone.`}
           onConfirm={confirmAndDelete} onCancel={() => setConfirmDelete(null)} />
       )}
     </Layout>

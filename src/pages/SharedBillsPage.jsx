@@ -2,24 +2,15 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { toActual, fmt } from '../utils'
+import { SHARED_CATEGORIES, FREQUENCIES } from '../constants'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 
-const CATEGORIES = ['Housing', 'Utilities', 'Groceries', 'Transport', 'Insurance', 'Subscriptions', 'Other']
-const FREQUENCIES = ['weekly', 'fortnightly', 'monthly', 'yearly', 'one-off']
-
-const toMonthly = (amount, frequency) => {
-  const n = parseFloat(amount) || 0
-  if (frequency === 'weekly') return n * 52 / 12
-  if (frequency === 'fortnightly') return n * 26 / 12
-  if (frequency === 'yearly') return n / 12
-  return n
-}
-
 const emptyForm = () => ({
   name: '', amount: '', category: 'Other', frequency: 'monthly',
-  is_recurring: true, month: new Date().toISOString().slice(0, 7)
+  is_recurring: true, month: new Date().toISOString().slice(0, 7),
 })
 
 const monthLabel = (ym) => {
@@ -44,8 +35,7 @@ export default function SharedBillsPage() {
     if (!household?.id) { setLoading(false); return }
     setLoading(true)
     const { data } = await supabase.from('expenses').select('*')
-      .eq('household_id', household.id).eq('is_shared', true)
-      .order('month', { ascending: false })
+      .eq('household_id', household.id).eq('is_shared', true).order('month', { ascending: false })
     setBills(data || [])
     setLoading(false)
   }
@@ -78,14 +68,16 @@ export default function SharedBillsPage() {
 
   const confirmAndDelete = async () => {
     await supabase.from('expenses').delete().eq('id', confirmDelete.id)
-    setConfirmDelete(null)
-    showToast('Bill deleted', 'error')
-    fetchBills()
+    setConfirmDelete(null); showToast('Bill deleted', 'error'); fetchBills()
   }
 
-  const totalMonthly = bills.reduce((s, b) => s + toMonthly(b.amount, b.frequency), 0)
+  // Use toActual for real totals — includes one-off bills at face value
+  const totalMonthly = bills.reduce((s, b) => s + toActual(b.amount, b.frequency), 0)
   const eachMonthly = totalMonthly / 2
-  const grouped = bills.reduce((acc, b) => { const m = b.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(b); return acc }, {})
+
+  const grouped = bills.reduce((acc, b) => {
+    const m = b.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(b); return acc
+  }, {})
 
   return (
     <Layout>
@@ -103,11 +95,11 @@ export default function SharedBillsPage() {
         <div className="grid grid-cols-2 gap-4 mb-6">
           <div className="bg-gradient-to-r from-amber-500 to-orange-500 rounded-2xl p-5 text-white">
             <p className="text-amber-100 text-sm">Total Household Bills</p>
-            <p className="text-2xl font-bold mt-1">${totalMonthly.toLocaleString('en-AU', { minimumFractionDigits: 2 })}<span className="text-sm font-normal">/mo</span></p>
+            <p className="text-2xl font-bold mt-1">${fmt(totalMonthly)}<span className="text-sm font-normal">/mo</span></p>
           </div>
           <div className="bg-white rounded-2xl border border-gray-100 p-5">
             <p className="text-gray-400 text-sm">Each Person Pays</p>
-            <p className="text-2xl font-bold text-gray-800 mt-1">${eachMonthly.toLocaleString('en-AU', { minimumFractionDigits: 2 })}<span className="text-sm font-normal text-gray-400">/mo</span></p>
+            <p className="text-2xl font-bold text-gray-800 mt-1">${fmt(eachMonthly)}<span className="text-sm font-normal text-gray-400">/mo</span></p>
           </div>
         </div>
 
@@ -131,7 +123,7 @@ export default function SharedBillsPage() {
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">{monthLabel(month)}</p>
                   <div className="space-y-3">
                     {items.map((bill) => {
-                      const monthly = toMonthly(bill.amount, bill.frequency)
+                      const actual = toActual(bill.amount, bill.frequency)
                       return (
                         <div key={bill.id} className="bg-white rounded-2xl border border-gray-100 px-5 py-4 flex items-center justify-between">
                           <div>
@@ -140,14 +132,14 @@ export default function SharedBillsPage() {
                               <span className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-medium">{bill.category}</span>
                               {bill.is_recurring && <span className="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">recurring</span>}
                             </div>
-                            <p className="text-sm text-gray-400 mt-0.5 capitalize">
-                              ${parseFloat(bill.amount).toLocaleString('en-AU', { minimumFractionDigits: 2 })} · {bill.frequency}
-                            </p>
+                            <p className="text-sm text-gray-400 mt-0.5 capitalize">${fmt(bill.amount)} · {bill.frequency}</p>
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="text-right">
-                              <p className="text-sm font-semibold text-amber-600">${monthly.toLocaleString('en-AU', { minimumFractionDigits: 2 })}/mo</p>
-                              <p className="text-xs text-gray-400">each: ${(monthly / 2).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
+                              <p className="text-sm font-semibold text-amber-600">
+                                {bill.frequency === 'one-off' ? `$${fmt(bill.amount)} one-off` : `$${fmt(actual)}/mo`}
+                              </p>
+                              <p className="text-xs text-gray-400">each: ${fmt(actual / 2)}</p>
                             </div>
                             <button onClick={() => openEdit(bill)} className="text-xs text-gray-400 hover:text-indigo-500 font-medium transition px-2 py-1 rounded-lg hover:bg-indigo-50">Edit</button>
                             <button onClick={() => setConfirmDelete(bill)} className="text-gray-300 hover:text-red-400 transition text-lg leading-none">✕</button>
@@ -180,7 +172,7 @@ export default function SharedBillsPage() {
               <label className="text-sm font-medium text-gray-700 block mb-1">Category</label>
               <select name="category" value={form.category} onChange={handle}
                 className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300">
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                {SHARED_CATEGORIES.map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
             <div>
@@ -211,7 +203,7 @@ export default function SharedBillsPage() {
       )}
 
       {confirmDelete && (
-        <ConfirmModal title="Delete Shared Bill?" message={`Are you sure you want to delete "${confirmDelete.name}"? This can't be undone.`}
+        <ConfirmModal title="Delete Shared Bill?" message={`Delete "${confirmDelete.name}"? This can't be undone.`}
           onConfirm={confirmAndDelete} onCancel={() => setConfirmDelete(null)} />
       )}
     </Layout>

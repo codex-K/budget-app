@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
 
-// Returns a promise resolving to the number of new items populated (0 if already done this month)
 export async function runRecurringPopulate(user, household) {
   const currentMonth = new Date().toISOString().slice(0, 7)
   const flagKey = `recurring_populated_${user.id}_${currentMonth}`
@@ -13,22 +12,17 @@ export async function runRecurringPopulate(user, household) {
       supabase.from('income').select('*').eq('user_id', user.id).eq('is_recurring', true),
       supabase.from('expenses').select('*').eq('user_id', user.id).eq('is_recurring', true).eq('is_shared', false),
     ])
-
-    if (incErr) throw new Error(`Income fetch failed: ${incErr.message}`)
-    if (expErr) throw new Error(`Expenses fetch failed: ${expErr.message}`)
+    if (incErr) throw new Error(incErr.message)
+    if (expErr) throw new Error(expErr.message)
 
     let recurringShared = []
     if (household?.id) {
-      const { data, error } = await supabase
-        .from('expenses').select('*')
-        .eq('household_id', household.id)
-        .eq('is_recurring', true)
-        .eq('is_shared', true)
-      if (error) throw new Error(`Shared bills fetch failed: ${error.message}`)
+      const { data, error } = await supabase.from('expenses').select('*')
+        .eq('household_id', household.id).eq('is_recurring', true).eq('is_shared', true)
+      if (error) throw new Error(error.message)
       recurringShared = data || []
     }
 
-    // Check what already exists this month
     const [{ data: existingIncome }, { data: existingExpenses }] = await Promise.all([
       supabase.from('income').select('name').eq('user_id', user.id).eq('month', currentMonth),
       supabase.from('expenses').select('name').eq('user_id', user.id).eq('is_shared', false).eq('month', currentMonth),
@@ -39,12 +33,9 @@ export async function runRecurringPopulate(user, household) {
 
     let existingSharedNames = new Set()
     if (household?.id) {
-      const { data: existingShared } = await supabase
-        .from('expenses').select('name')
-        .eq('household_id', household.id)
-        .eq('is_shared', true)
-        .eq('month', currentMonth)
-      existingSharedNames = new Set((existingShared || []).map(b => b.name))
+      const { data } = await supabase.from('expenses').select('name')
+        .eq('household_id', household.id).eq('is_shared', true).eq('month', currentMonth)
+      existingSharedNames = new Set((data || []).map(b => b.name))
     }
 
     const newIncome = (recurringIncome || [])
@@ -67,7 +58,7 @@ export async function runRecurringPopulate(user, household) {
     if (inserts.length > 0) {
       const results = await Promise.all(inserts)
       const errors = results.filter(r => r.error).map(r => r.error.message)
-      if (errors.length > 0) throw new Error(`Insert failed: ${errors.join(', ')}`)
+      if (errors.length > 0) throw new Error(errors.join(', '))
     }
 
     const total = newIncome.length + newExpenses.length + newShared.length
@@ -76,11 +67,10 @@ export async function runRecurringPopulate(user, household) {
 
   } catch (err) {
     console.error('Recurring auto-populate failed:', err.message)
-    return -1 // signals an error occurred
+    return -1
   }
 }
 
-// Hook version for use outside Dashboard (doesn't need sequencing)
 export function useRecurring() {
   const { user, household } = useAuth()
   useEffect(() => {

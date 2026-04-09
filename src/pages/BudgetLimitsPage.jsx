@@ -2,21 +2,11 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { toActual, fmt } from '../utils'
+import { CATEGORIES } from '../constants'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
-
-const CATEGORIES = ['Housing', 'Transport', 'Food', 'Health', 'Entertainment', 'Clothing', 'Subscriptions', 'Education', 'Personal Care', 'Other']
-
-const fmt = (n) => parseFloat(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-const toMonthly = (amount, frequency) => {
-  const n = parseFloat(amount) || 0
-  if (frequency === 'weekly') return n * 52 / 12
-  if (frequency === 'fortnightly') return n * 26 / 12
-  if (frequency === 'yearly') return n / 12
-  return n
-}
 
 const STATUS_COLOUR = (pct) => {
   if (pct >= 100) return { bar: 'bg-red-500', badge: 'bg-red-50 text-red-600', label: 'Over budget' }
@@ -29,6 +19,7 @@ export default function BudgetLimitsPage() {
   const { showToast } = useToast()
   const [limits, setLimits] = useState([])
   const [expenses, setExpenses] = useState([])
+  const [sharedBills, setSharedBills] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editingLimit, setEditingLimit] = useState(null)
@@ -41,19 +32,22 @@ export default function BudgetLimitsPage() {
 
   const fetchData = async () => {
     setLoading(true)
-    const [limitsRes, expRes] = await Promise.all([
+    const [limitsRes, expRes, sharedRes] = await Promise.all([
       supabase.from('budget_limits').select('*').eq('user_id', user.id),
       supabase.from('expenses').select('*').eq('user_id', user.id).eq('is_shared', false).eq('month', currentMonth),
+      household?.id
+        ? supabase.from('expenses').select('*').eq('household_id', household.id).eq('is_shared', true).eq('month', currentMonth)
+        : Promise.resolve({ data: [] }),
     ])
     setLimits(limitsRes.data || [])
     setExpenses(expRes.data || [])
+    setSharedBills(sharedRes.data || [])
     setLoading(false)
   }
 
-  useEffect(() => { fetchData() }, [])
+  useEffect(() => { fetchData() }, [household])
 
   const handle = (e) => setForm({ ...form, [e.target.name]: e.target.value })
-
   const openAdd = () => { setEditingLimit(null); setForm({ category: 'Food', monthly_limit: '' }); setError(''); setShowModal(true) }
   const openEdit = (limit) => { setEditingLimit(limit); setForm({ category: limit.category, monthly_limit: limit.monthly_limit }); setError(''); setShowModal(true) }
 
@@ -66,8 +60,11 @@ export default function BudgetLimitsPage() {
       if (error) { setError(error.message); setSaving(false); return }
     } else {
       const exists = limits.find(l => l.category === form.category)
-      if (exists) return setError(`A limit for ${form.category} already exists. Click Edit to update it.`)
-      const { error } = await supabase.from('budget_limits').insert({ user_id: user.id, household_id: household?.id, category: form.category, monthly_limit: parseFloat(form.monthly_limit) })
+      if (exists) { setError(`A limit for ${form.category} already exists. Click Edit to update it.`); setSaving(false); return }
+      const { error } = await supabase.from('budget_limits').insert({
+        user_id: user.id, household_id: household?.id,
+        category: form.category, monthly_limit: parseFloat(form.monthly_limit),
+      })
       if (error) { setError(error.message); setSaving(false); return }
     }
     setShowModal(false)
@@ -77,16 +74,26 @@ export default function BudgetLimitsPage() {
 
   const confirmAndDelete = async () => {
     await supabase.from('budget_limits').delete().eq('id', confirmDelete.id)
-    setConfirmDelete(null)
-    showToast('Budget limit removed', 'error')
-    fetchData()
+    setConfirmDelete(null); showToast('Budget limit removed', 'error'); fetchData()
   }
 
+  // BUG FIX: Include half of shared bills in the relevant category's spending total
+  // e.g. if there's a shared "Housing" bill, half counts towards the "Housing" budget limit
   const spendByCategory = expenses.reduce((acc, e) => {
     const cat = e.category || 'Other'
-    acc[cat] = (acc[cat] || 0) + toMonthly(e.amount, e.frequency)
+    acc[cat] = (acc[cat] || 0) + toActual(e.amount, e.frequency)
     return acc
   }, {})
+
+  // Add half of shared bills to matching categories
+  sharedBills.forEach(b => {
+    const cat = b.category || 'Other'
+    // Map shared categories to personal expense categories where they overlap
+    const mappedCat = cat === 'Groceries' ? 'Food' : cat
+    if (CATEGORIES.includes(mappedCat)) {
+      spendByCategory[mappedCat] = (spendByCategory[mappedCat] || 0) + (toActual(b.amount, b.frequency) / 2)
+    }
+  })
 
   const usedCategories = limits.map(l => l.category)
   const availableCategories = CATEGORIES.filter(c => !usedCategories.includes(c))
@@ -104,6 +111,12 @@ export default function BudgetLimitsPage() {
             + Set Limit
           </button>
         </div>
+
+        {household?.id && (
+          <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-4 text-xs text-blue-600">
+            ℹ️ Spending totals include your share of shared bills where categories match.
+          </div>
+        )}
 
         {loading ? <p className="text-gray-400 text-sm text-center py-8">Loading...</p>
           : limits.length === 0 ? (
@@ -129,7 +142,7 @@ export default function BudgetLimitsPage() {
                       </div>
                       <div className="flex items-center gap-3">
                         <p className="text-sm text-gray-500"><span className="font-semibold text-gray-800">${fmt(spent)}</span> / ${fmt(cap)}</p>
-                        <button onClick={() => openEdit(limit)} className="text-xs text-indigo-500 hover:text-indigo-700 font-medium transition">Edit</button>
+                        <button onClick={() => openEdit(limit)} className="text-xs text-indigo-500 hover:text-indigo-700 font-medium">Edit</button>
                         <button onClick={() => setConfirmDelete(limit)} className="text-gray-300 hover:text-red-400 transition text-lg">✕</button>
                       </div>
                     </div>

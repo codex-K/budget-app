@@ -2,27 +2,19 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { toMonthly, fmt } from '../utils'
+import { INCOME_FREQUENCIES } from '../constants'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 
-const FREQUENCIES = ['weekly', 'fortnightly', 'monthly', 'yearly']
-
-const toMonthly = (amount, frequency) => {
-  const n = parseFloat(amount) || 0
-  if (frequency === 'weekly') return n * 52 / 12
-  if (frequency === 'fortnightly') return n * 26 / 12
-  if (frequency === 'yearly') return n / 12
-  return n
-}
-
 const emptyForm = () => ({
   name: '', amount: '', frequency: 'monthly', is_recurring: true,
-  month: new Date().toISOString().slice(0, 7)
+  month: new Date().toISOString().slice(0, 7),
 })
 
 const monthLabel = (ym) => {
-  if (!ym || ym === 'Unknown') return 'Unknown Month'
+  if (!ym) return 'Unknown'
   const [y, m] = ym.split('-')
   return new Date(y, m - 1).toLocaleString('default', { month: 'long', year: 'numeric' })
 }
@@ -41,9 +33,8 @@ export default function IncomePage() {
 
   const fetchIncomes = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('income').select('*').eq('user_id', user.id)
-      .order('month', { ascending: false })
+    const { data } = await supabase.from('income').select('*')
+      .eq('user_id', user.id).order('month', { ascending: false })
     setIncomes(data || [])
     setLoading(false)
   }
@@ -75,13 +66,17 @@ export default function IncomePage() {
 
   const confirmAndDelete = async () => {
     await supabase.from('income').delete().eq('id', confirmDelete.id)
-    setConfirmDelete(null)
-    showToast('Income deleted', 'error')
-    fetchIncomes()
+    setConfirmDelete(null); showToast('Income deleted', 'error'); fetchIncomes()
   }
 
-  const totalMonthly = incomes.reduce((s, i) => s + toMonthly(i.amount, i.frequency), 0)
-  const grouped = incomes.reduce((acc, i) => { const m = i.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(i); return acc }, {})
+  // toMonthly (not toActual) for the header — shows ongoing monthly commitment, excludes one-offs
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const currentMonthIncome = incomes.filter(i => i.month === currentMonth)
+  const totalMonthly = currentMonthIncome.reduce((s, i) => s + toMonthly(i.amount, i.frequency), 0)
+
+  const grouped = incomes.reduce((acc, i) => {
+    const m = i.month || 'Unknown'; if (!acc[m]) acc[m] = []; acc[m].push(i); return acc
+  }, {})
 
   return (
     <Layout>
@@ -97,8 +92,9 @@ export default function IncomePage() {
         </div>
 
         <div className="bg-gradient-to-r from-indigo-500 to-violet-500 rounded-2xl p-5 text-white mb-6">
-          <p className="text-indigo-100 text-sm">Monthly Income (current sources)</p>
-          <p className="text-3xl font-bold mt-1">${totalMonthly.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <p className="text-indigo-100 text-sm">Recurring Monthly Income</p>
+          <p className="text-3xl font-bold mt-1">${fmt(totalMonthly)}</p>
+          <p className="text-indigo-200 text-xs mt-1">One-off income shown separately below</p>
         </div>
 
         {loading ? <p className="text-gray-400 text-sm text-center py-8">Loading...</p>
@@ -119,12 +115,16 @@ export default function IncomePage() {
                         <div>
                           <p className="font-medium text-gray-800">{inc.name}</p>
                           <p className="text-sm text-gray-400 mt-0.5 capitalize">
-                            ${parseFloat(inc.amount).toLocaleString('en-AU', { minimumFractionDigits: 2 })} · {inc.frequency}
+                            ${fmt(inc.amount)} · {inc.frequency}
                             {inc.is_recurring && <span className="ml-2 text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">recurring</span>}
                           </p>
                         </div>
                         <div className="flex items-center gap-3">
-                          <p className="text-sm font-semibold text-indigo-600">${toMonthly(inc.amount, inc.frequency).toLocaleString('en-AU', { minimumFractionDigits: 2 })}/mo</p>
+                          <p className="text-sm font-semibold text-indigo-600">
+                            {inc.frequency === 'one-off'
+                              ? <span className="text-amber-600">${fmt(inc.amount)} one-off</span>
+                              : `$${fmt(toMonthly(inc.amount, inc.frequency))}/mo`}
+                          </p>
                           <button onClick={() => openEdit(inc)} className="text-xs text-gray-400 hover:text-indigo-500 font-medium transition px-2 py-1 rounded-lg hover:bg-indigo-50">Edit</button>
                           <button onClick={() => setConfirmDelete(inc)} className="text-gray-300 hover:text-red-400 transition text-lg leading-none">✕</button>
                         </div>
@@ -154,7 +154,7 @@ export default function IncomePage() {
               <label className="text-sm font-medium text-gray-700 block mb-1">Frequency</label>
               <select name="frequency" value={form.frequency} onChange={handle}
                 className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300">
-                {FREQUENCIES.map(f => <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)}</option>)}
+                {INCOME_FREQUENCIES.map(f => <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-2">
@@ -178,7 +178,7 @@ export default function IncomePage() {
       )}
 
       {confirmDelete && (
-        <ConfirmModal title="Delete Income?" message={`Are you sure you want to delete "${confirmDelete.name}"? This can't be undone.`}
+        <ConfirmModal title="Delete Income?" message={`Delete "${confirmDelete.name}"? This can't be undone.`}
           onConfirm={confirmAndDelete} onCancel={() => setConfirmDelete(null)} />
       )}
     </Layout>
