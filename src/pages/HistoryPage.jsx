@@ -220,9 +220,17 @@ export default function HistoryPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Month selector */}
+            {/* Month selector + Export */}
             <div>
-              <p className="text-sm font-medium text-gray-500 mb-2">Monthly breakdown</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium text-gray-500">Monthly breakdown</p>
+                <button
+                  onClick={() => exportCSV(transactions, selectedMonth)}
+                  disabled={transactions.length === 0}
+                  className="text-xs text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+                  ↓ Export CSV — {monthLabel(selectedMonth)}
+                </button>
+              </div>
               <div className="flex gap-2 flex-wrap">
                 {[...months].reverse().map(m => (
                   <button key={m} onClick={() => setSelectedMonth(m)}
@@ -290,11 +298,6 @@ export default function HistoryPage() {
               <div className="bg-white rounded-2xl border border-gray-100 p-6">
                 <div className="flex items-center justify-between mb-4">
                   <p className="font-semibold text-gray-800">All Transactions — {monthLabelLong(selectedMonth)}</p>
-                  <button
-                    onClick={() => exportCSV(transactions, selectedMonth)}
-                    className="text-xs text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
-                    ↓ Export CSV
-                  </button>
                 </div>
                 <div className="space-y-1">
                   {transactions.map((t) => {
